@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>廠務通 · 打卡 / 薪資 / 庫存</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  :root{
+    --ink:#1B2430;
+    --teal:#2F6F62;
+    --teal-dim:#DCE9E6;
+    --alert:#B23A2E;
+    --alert-dim:#F6DEDC;
+    --paper:#F4F2ED;
+    --card:#FFFFFF;
+    --line:#E3E0D8;
+    --text:#1B2430;
+    --text-dim:#6B7280;
+    --radius:14px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--paper);color:var(--text);
+    font-family:'IBM Plex Sans TC',-apple-system,BlinkMacSystemFont,sans-serif;
+    -webkit-font-smoothing:antialiased;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  #app{max-width:480px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column;
+    background:var(--paper);position:relative;}
+
+  /* ---------- Login ---------- */
+  .login-screen{flex:1;display:flex;flex-direction:column;justify-content:center;
+    padding:32px 28px;background:var(--ink);color:#fff;}
+  .login-screen h1{font-size:22px;font-weight:700;margin:0 0 4px;}
+  .login-screen p.sub{color:#9CA8AE;margin:0 0 32px;font-size:14px;}
+  .field{margin-bottom:16px;}
+  .field label{display:block;font-size:13px;color:#B7C0C4;margin-bottom:6px;}
+  .field input{width:100%;padding:12px 14px;border-radius:10px;border:1px solid #33414F;
+    background:#232E3B;color:#fff;font-size:15px;}
+  .field input::placeholder{color:#6E7B84;}
+  .btn-primary{width:100%;padding:14px;border:none;border-radius:10px;background:var(--teal);
+    color:#fff;font-size:16px;font-weight:500;cursor:pointer;margin-top:8px;}
+  .btn-primary:disabled{opacity:0.6;}
+  .login-error{color:#FFB4AA;font-size:13px;margin-top:12px;min-height:16px;}
+
+  /* ---------- Header ---------- */
+  .topbar{background:var(--ink);color:#fff;padding:18px 20px 16px;
+    display:flex;justify-content:space-between;align-items:flex-start;}
+  .topbar .who{font-size:15px;font-weight:500;}
+  .topbar .role{font-size:12px;color:#9CA8AE;margin-top:2px;}
+  .topbar .page-title{font-size:19px;font-weight:700;}
+  .logout-link{background:none;border:none;color:#9CA8AE;font-size:12px;cursor:pointer;padding:4px;}
+
+  /* ---------- Content ---------- */
+  .content{flex:1;overflow-y:auto;padding:18px 18px 90px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    padding:18px;margin-bottom:14px;}
+  .card h3{margin:0 0 12px;font-size:14px;color:var(--text-dim);font-weight:500;}
+  .empty-state{color:var(--text-dim);font-size:14px;text-align:center;padding:24px 0;}
+
+  /* clock button */
+  .clock-btn{width:100%;padding:22px;border:none;border-radius:16px;font-size:17px;
+    font-weight:700;color:#fff;cursor:pointer;background:var(--teal);}
+  .clock-btn.out{background:var(--ink);}
+  .clock-btn:disabled{background:#C7CDCB;color:#8B928F;cursor:default;}
+  .clock-status{text-align:center;font-size:13px;color:var(--text-dim);margin-top:10px;}
+  .clock-times{display:flex;justify-content:space-around;margin-top:14px;font-size:14px;}
+  .clock-times div span{display:block;color:var(--text-dim);font-size:12px;margin-bottom:2px;}
+
+  .list-row{display:flex;justify-content:space-between;align-items:center;
+    padding:11px 0;border-bottom:1px solid var(--line);}
+  .list-row:last-child{border-bottom:none;}
+  .list-row .l-title{font-size:14px;font-weight:500;}
+  .list-row .l-sub{font-size:12px;color:var(--text-dim);margin-top:2px;}
+  .list-row .l-val{font-size:15px;font-weight:600;}
+
+  .badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:100px;font-weight:500;}
+  .badge.paid{background:var(--teal-dim);color:var(--teal);}
+  .badge.pending{background:#EFE7D6;color:#8A6A1F;}
+  .badge.approved{background:var(--teal-dim);color:var(--teal);}
+  .badge.rejected{background:var(--alert-dim);color:var(--alert);}
+
+  .payroll-row{cursor:pointer;}
+  .payroll-detail{margin-top:6px;padding-top:10px;border-top:1px dashed var(--line);font-size:13px;}
+  .pd-line{display:flex;justify-content:space-between;padding:4px 0;color:var(--text-dim);}
+  .pd-line.total{color:var(--text);font-weight:700;border-top:1px solid var(--line);
+    margin-top:6px;padding-top:8px;font-size:15px;}
+
+  .mat-row{padding:12px 0;border-bottom:1px solid var(--line);}
+  .mat-row:last-child{border-bottom:none;}
+  .mat-top{display:flex;justify-content:space-between;align-items:center;}
+  .mat-name{font-size:14px;font-weight:500;}
+  .mat-sub{font-size:12px;color:var(--text-dim);margin-top:2px;}
+  .mat-stock{font-size:16px;font-weight:700;}
+  .mat-stock.low{color:var(--alert);}
+  .mat-actions{display:flex;gap:8px;margin-top:10px;}
+  .mat-actions button{flex:1;padding:8px;border-radius:8px;border:1px solid var(--line);
+    background:var(--card);font-size:13px;cursor:pointer;}
+  .mat-actions button.in{color:var(--teal);border-color:var(--teal);}
+  .mat-actions button.out{color:var(--alert);border-color:var(--alert);}
+
+  .mat-form{margin-top:10px;display:none;gap:8px;flex-direction:column;}
+  .mat-form.show{display:flex;}
+  .mat-form input,.mat-form textarea{padding:9px 10px;border-radius:8px;border:1px solid var(--line);
+    font-size:13px;font-family:inherit;}
+  .mat-form .row{display:flex;gap:8px;}
+  .mat-form .row button{padding:9px;border-radius:8px;border:none;background:var(--ink);color:#fff;font-size:13px;}
+
+  .profile-name{font-size:18px;font-weight:700;}
+  .profile-sub{font-size:13px;color:var(--text-dim);margin-top:2px;}
+  .profile-grid{margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .profile-grid div span{display:block;font-size:11px;color:var(--text-dim);margin-bottom:3px;}
+  .profile-grid div b{font-size:14px;font-weight:500;}
+
+  select,textarea.req-input,input.req-input{width:100%;padding:10px 12px;border-radius:8px;
+    border:1px solid var(--line);font-size:14px;font-family:inherit;margin-bottom:10px;}
+  .btn-secondary{width:100%;padding:12px;border:none;border-radius:10px;background:var(--ink);
+    color:#fff;font-size:14px;cursor:pointer;}
+
+  /* ---------- Bottom nav ---------- */
+  .bottom-nav{position:absolute;bottom:0;left:0;right:0;background:#fff;
+    border-top:1px solid var(--line);display:flex;padding:6px 0 8px;}
+  .nav-btn{flex:1;background:none;border:none;display:flex;flex-direction:column;
+    align-items:center;gap:3px;color:#9AA1A6;cursor:pointer;padding:6px 0;}
+  .nav-btn.active{color:var(--teal);}
+  .nav-btn .ic{width:22px;height:22px;}
+  .nav-btn .lb{font-size:11px;}
+
+  .toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%);
+    background:var(--ink);color:#fff;padding:10px 18px;border-radius:100px;font-size:13px;
+    opacity:0;pointer-events:none;transition:opacity .25s;z-index:50;}
+  .toast.show{opacity:1;}
+
+  .hidden{display:none !important;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const SUPABASE_URL = 'https://ijstumxmlljlqafmvdqa.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_ljeRP12rx6Ck9BQc3E2g1A_tJaWuABJ';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const app = document.getElementById('app');
+const toastEl = document.getElementById('toast');
+let me = null;        // employees row for the logged-in user
+let activeTab = 'clock';
+
+function toast(msg){
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  setTimeout(()=>toastEl.classList.remove('show'), 2200);
+}
+function money(n){ return 'NT$ ' + Math.round(n||0).toLocaleString('en-US'); }
+function fmtDate(d){ if(!d) return '—'; return new Date(d).toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit'}); }
+function fmtTime(d){ if(!d) return '—'; return new Date(d).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'}); }
+function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+
+const ICONS = {
+  clock: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
+  payroll: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h3"/></svg>',
+  inventory: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>',
+  more: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>'
+};
+
+/* ---------------- Auth flow ---------------- */
+async function init(){
+  const { data:{ session } } = await sb.auth.getSession();
+  if(session){ await afterLogin(); } else { renderLogin(); }
+}
+
+function renderLogin(){
+  app.innerHTML = `
+    <div class="login-screen">
+      <h1>廠務通</h1>
+      <p class="sub">打卡 · 薪資 · 庫存，一站管理</p>
+      <div class="field">
+        <label>公司信箱</label>
+        <input type="email" id="login-email" placeholder="you@example.com" autocomplete="username">
+      </div>
+      <div class="field">
+        <label>密碼</label>
+        <input type="password" id="login-pw" placeholder="請輸入密碼" autocomplete="current-password">
+      </div>
+      <button class="btn-primary" id="login-btn">登入</button>
+      <div class="login-error" id="login-err"></div>
+    </div>`;
+  document.getElementById('login-btn').onclick = doLogin;
+  document.getElementById('login-pw').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+}
+
+async function doLogin(){
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-pw').value;
+  const errEl = document.getElementById('login-err');
+  const btn = document.getElementById('login-btn');
+  errEl.textContent = '';
+  if(!email || !password){ errEl.textContent = '請輸入信箱與密碼'; return; }
+  btn.disabled = true; btn.textContent = '登入中…';
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  btn.disabled = false; btn.textContent = '登入';
+  if(error){ errEl.textContent = '登入失敗，請確認信箱或密碼是否正確'; return; }
+  await afterLogin();
+}
+
+async function afterLogin(){
+  const { data:{ user } } = await sb.auth.getUser();
+  const { data, error } = await sb.from('employees').select('*').eq('login_email', user.email).single();
+  if(error || !data){
+    toast('找不到對應的員工資料，請聯絡管理員');
+    await sb.auth.signOut();
+    renderLogin();
+    return;
+  }
+  me = data;
+  renderShell();
+  showTab('clock');
+}
+
+async function doLogout(){
+  await sb.auth.signOut();
+  me = null;
+  renderLogin();
+}
+
+/* ---------------- Shell ---------------- */
+function renderShell(){
+  app.innerHTML = `
+    <div class="topbar">
+      <div>
+        <div class="who">${me.name} · ${me.department||''}</div>
+        <div class="role" id="page-title">打卡</div>
+      </div>
+      <button class="logout-link" id="logout-btn">登出</button>
+    </div>
+    <div class="content" id="content"></div>
+    <div class="bottom-nav">
+      <button class="nav-btn" data-tab="clock">${ICONS.clock}<span class="lb">打卡</span></button>
+      <button class="nav-btn" data-tab="payroll">${ICONS.payroll}<span class="lb">薪資</span></button>
+      <button class="nav-btn" data-tab="inventory">${ICONS.inventory}<span class="lb">庫存</span></button>
+      <button class="nav-btn" data-tab="more">${ICONS.more}<span class="lb">更多</span></button>
+    </div>`;
+  document.getElementById('logout-btn').onclick = doLogout;
+  document.querySelectorAll('.nav-btn').forEach(b=>{
+    b.onclick = ()=> showTab(b.dataset.tab);
+  });
+}
+
+function showTab(tab){
+  activeTab = tab;
+  document.querySelectorAll('.nav-btn').forEach(b=> b.classList.toggle('active', b.dataset.tab===tab));
+  const titles = { clock:'打卡', payroll:'薪資', inventory:'庫存', more:'更多' };
+  document.getElementById('page-title').textContent = titles[tab];
+  const loaders = { clock:loadClockTab, payroll:loadPayrollTab, inventory:loadInventoryTab, more:loadMoreTab };
+  loaders[tab]();
+}
+
+/* ---------------- 打卡 ---------------- */
+async function loadClockTab(){
+  const content = document.getElementById('content');
+  content.innerHTML = `<div class="card"><div class="empty-state">載入中…</div></div>`;
+
+  const { data: todayRow } = await sb.from('timeclock').select('*')
+    .eq('employee_id', me.id).eq('clock_date', todayStr()).maybeSingle();
+
+  const { data: history } = await sb.from('timeclock').select('*')
+    .eq('employee_id', me.id).order('clock_date', { ascending:false }).limit(5);
+
+  let btnHtml, statusHtml;
+  if(!todayRow || !todayRow.clock_in){
+    btnHtml = `<button class="clock-btn" id="clock-action">上班打卡</button>`;
+    statusHtml = `今天還沒有打卡紀錄`;
+  } else if(!todayRow.clock_out){
+    btnHtml = `<button class="clock-btn out" id="clock-action">下班打卡</button>`;
+    statusHtml = `上班時間 ${fmtTime(todayRow.clock_in)}`;
+  } else {
+    btnHtml = `<button class="clock-btn" disabled>今日打卡已完成</button>`;
+    statusHtml = `工時 ${todayRow.work_hours ?? '—'} 小時`;
+  }
+
+  content.innerHTML = `
+    <div class="card">
+      ${btnHtml}
+      <div class="clock-status">${statusHtml}</div>
+      ${todayRow ? `<div class="clock-times">
+        <div><span>上班</span>${fmtTime(todayRow.clock_in)}</div>
+        <div><span>下班</span>${fmtTime(todayRow.clock_out)}</div>
+      </div>` : ''}
+    </div>
+    <div class="card">
+      <h3>最近紀錄</h3>
+      ${(history&&history.length) ? history.map(r=>`
+        <div class="list-row">
+          <div><div class="l-title">${fmtDate(r.clock_date)} · ${r.shift_type||''}</div>
+            <div class="l-sub mono">${fmtTime(r.clock_in)} – ${fmtTime(r.clock_out)}</div></div>
+          <div class="l-val mono">${r.work_hours!=null ? r.work_hours+'h' : '—'}</div>
+        </div>`).join('') : `<div class="empty-state">尚無紀錄</div>`}
+    </div>`;
+
+  const actionBtn = document.getElementById('clock-action');
+  if(actionBtn){
+    actionBtn.onclick = async ()=>{
+      actionBtn.disabled = true;
+      const nowIso = new Date().toISOString();
+      let err;
+      if(!todayRow){
+        ({ error: err } = await sb.from('timeclock').insert({
+          employee_id: me.id, clock_date: todayStr(), clock_in: nowIso
+        }));
+      } else if(!todayRow.clock_in){
+        ({ error: err } = await sb.from('timeclock').update({ clock_in: nowIso }).eq('id', todayRow.id));
+      } else {
+        ({ error: err } = await sb.from('timeclock').update({ clock_out: nowIso }).eq('id', todayRow.id));
+      }
+      if(err){ toast('打卡失敗，請再試一次'); actionBtn.disabled = false; return; }
+      toast('打卡成功');
+      loadClockTab();
+    };
+  }
+}
+
+/* ---------------- 薪資 ---------------- */
+async function loadPayrollTab(){
+  const content = document.getElementById('content');
+  const { data } = await sb.from('payroll').select('*')
+    .eq('employee_id', me.id).order('pay_month', { ascending:false });
+
+  if(!data || !data.length){
+    content.innerHTML = `<div class="card"><div class="empty-state">目前沒有薪資紀錄</div></div>`;
+    return;
+  }
+  content.innerHTML = `<div class="card"><h3>薪資紀錄</h3>${data.map(p=>`
+    <div class="list-row payroll-row" data-id="${p.id}">
+      <div><div class="l-title">${p.pay_month}</div>
+        <div class="l-sub"><span class="badge ${p.status==='已核發'?'paid':'pending'}">${p.status}</span></div></div>
+      <div class="l-val mono">${money(p.net_pay)}</div>
+    </div>
+    <div class="payroll-detail hidden" id="detail-${p.id}">
+      <div class="pd-line"><span>本薪</span><span>${money(p.base_salary)}</span></div>
+      <div class="pd-line"><span>加班費</span><span>${money(p.overtime)}</span></div>
+      <div class="pd-line"><span>夜班津貼</span><span>${money(p.night_shift_allowance)}</span></div>
+      <div class="pd-line"><span>全勤獎金</span><span>${money(p.full_attendance_bonus)}</span></div>
+      <div class="pd-line"><span>勞保費</span><span>−${money(p.labor_insurance)}</span></div>
+      <div class="pd-line"><span>健保費</span><span>−${money(p.health_insurance)}</span></div>
+      <div class="pd-line"><span>所得稅</span><span>−${money(p.income_tax)}</span></div>
+      <div class="pd-line total"><span>實發金額</span><span>${money(p.net_pay)}</span></div>
+    </div>`).join('')}</div>`;
+
+  document.querySelectorAll('.payroll-row').forEach(row=>{
+    row.onclick = ()=>{
+      document.getElementById('detail-'+row.dataset.id).classList.toggle('hidden');
+    };
+  });
+}
+
+/* ---------------- 庫存 ---------------- */
+async function loadInventoryTab(){
+  const content = document.getElementById('content');
+  const { data } = await sb.from('materials_with_stock').select('*').order('material_code');
+
+  if(!data || !data.length){
+    content.innerHTML = `<div class="card"><div class="empty-state">尚無物料資料</div></div>`;
+    return;
+  }
+  content.innerHTML = `<div class="card"><h3>物料庫存</h3>${data.map(m=>`
+    <div class="mat-row">
+      <div class="mat-top">
+        <div><div class="mat-name">${m.name}</div>
+          <div class="mat-sub">${m.category||''} · 安全庫存 ${m.safety_stock} ${m.unit||''}</div></div>
+        <div class="mat-stock ${m.low_stock?'low':''} mono">${m.current_stock} ${m.unit||''}</div>
+      </div>
+      <div class="mat-actions">
+        <button class="in" data-id="${m.id}" data-type="入庫">入庫</button>
+        <button class="out" data-id="${m.id}" data-type="出庫">出庫</button>
+      </div>
+      <div class="mat-form" id="form-${m.id}">
+        <input type="number" min="1" placeholder="數量" class="req-input" id="qty-${m.id}">
+        <input type="text" placeholder="備註（選填）" class="req-input" id="note-${m.id}">
+        <div class="row">
+          <button data-submit="${m.id}">送出</button>
+        </div>
+      </div>
+    </div>`).join('')}</div>`;
+
+  document.querySelectorAll('.mat-actions button').forEach(btn=>{
+    btn.onclick = ()=>{
+      const id = btn.dataset.id, type = btn.dataset.type;
+      const form = document.getElementById('form-'+id);
+      form.classList.add('show');
+      form.dataset.type = type;
+    };
+  });
+  document.querySelectorAll('[data-submit]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const id = btn.dataset.submit;
+      const form = document.getElementById('form-'+id);
+      const qty = parseFloat(document.getElementById('qty-'+id).value);
+      const note = document.getElementById('note-'+id).value.trim();
+      if(!qty || qty<=0){ toast('請輸入正確數量'); return; }
+      const { error } = await sb.from('inventory_log').insert({
+        material_id: id, employee_id: me.id, change_type: form.dataset.type,
+        quantity: qty, note: note || null
+      });
+      if(error){ toast('送出失敗，請再試一次'); return; }
+      toast(form.dataset.type + '成功');
+      loadInventoryTab();
+    };
+  });
+}
+
+/* ---------------- 更多 ---------------- */
+async function loadMoreTab(){
+  const content = document.getElementById('content');
+  const { data: myRequests } = await sb.from('requests').select('*')
+    .eq('employee_id', me.id).order('submitted_at', { ascending:false }).limit(10);
+
+  content.innerHTML = `
+    <div class="card">
+      <div class="profile-name">${me.name}</div>
+      <div class="profile-sub">${me.title||''} · ${me.department||''}</div>
+      <div class="profile-grid">
+        <div><span>員工編號</span><b class="mono">${me.employee_code}</b></div>
+        <div><span>狀態</span><b>${me.status}</b></div>
+        <div><span>到職日</span><b>${fmtDate(me.start_date)}</b></div>
+        <div><span>信箱</span><b style="font-size:12px">${me.login_email}</b></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>提出申請</h3>
+      <select id="req-type">
+        <option value="請假">請假</option>
+        <option value="加班">加班</option>
+        <option value="補打卡">補打卡</option>
+      </select>
+      <input type="datetime-local" class="req-input" id="req-start">
+      <input type="datetime-local" class="req-input" id="req-end" placeholder="結束時間（選填）">
+      <textarea class="req-input" id="req-reason" placeholder="事由說明" rows="2"></textarea>
+      <button class="btn-secondary" id="req-submit">送出申請</button>
+    </div>
+    <div class="card">
+      <h3>我的申請紀錄</h3>
+      ${(myRequests&&myRequests.length) ? myRequests.map(r=>`
+        <div class="list-row">
+          <div><div class="l-title">${r.request_type}</div>
+            <div class="l-sub">${fmtDate(r.start_at)} ${fmtTime(r.start_at)}</div></div>
+          <span class="badge ${r.status==='已核准'?'approved':(r.status==='已拒絕'?'rejected':'pending')}">${r.status}</span>
+        </div>`).join('') : `<div class="empty-state">尚無申請紀錄</div>`}
+    </div>`;
+
+  document.getElementById('req-submit').onclick = async ()=>{
+    const type = document.getElementById('req-type').value;
+    const start = document.getElementById('req-start').value;
+    const end = document.getElementById('req-end').value;
+    const reason = document.getElementById('req-reason').value.trim();
+    if(!start){ toast('請選擇開始時間'); return; }
+    const { error } = await sb.from('requests').insert({
+      employee_id: me.id, request_type: type,
+      start_at: new Date(start).toISOString(),
+      end_at: end ? new Date(end).toISOString() : null,
+      reason: reason || null
+    });
+    if(error){ toast('送出失敗，請再試一次'); return; }
+    toast('申請已送出');
+    loadMoreTab();
+  };
+}
+
+init();
+</script>
+</body>
+</html>
