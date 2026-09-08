@@ -1,8 +1,25 @@
 {
-  "name": "積分星球",
-  "short_name": "積分星球",
-  "display": "standalone",
+  "name": "廠務通 · 打卡 / 薪資 / 庫存",
+  "short_name": "廠務通",
+  "description": "工廠員工打卡、薪資查詢、庫存管理系統",
   "start_url": "./index.html",
-  "background_color": "#ffffff",
-  "theme_color": "#ffffff"
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F4F2ED",
+  "theme_color": "#1B2430",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
 }
