@@ -178,6 +178,45 @@ function toast(msg){
   setTimeout(()=>toastEl.classList.remove('show'), 2200);
 }
 function money(n){ return 'NT$ ' + Math.round(n||0).toLocaleString('en-US'); }
+
+// 產生「匯出並寄送」的共用小工具列 HTML
+function exportBarHtml(reportType){
+  return `
+    <div style="display:flex;gap:8px;margin-top:14px;padding-top:14px;border-top:1px dashed var(--line);">
+      <select id="exp-format-${reportType}" style="flex:1;">
+        <option value="xlsx">Excel</option>
+        <option value="pdf">PDF</option>
+      </select>
+      <button data-export="${reportType}" style="flex:1;padding:10px;border-radius:8px;border:none;background:var(--ink);color:#fff;font-size:13px;">匯出並寄到我的信箱</button>
+    </div>`;
+}
+
+// 綁定所有匯出按鈕的送出邏輯
+function bindExportButtons(){
+  document.querySelectorAll('[data-export]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const reportType = btn.dataset.export;
+      const format = document.getElementById('exp-format-'+reportType).value;
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '匯出中…';
+      try{
+        const { data, error } = await sb.functions.invoke('export-report', {
+          body: { reportType, format }
+        });
+        if(error || data?.error){
+          toast('匯出失敗，請再試一次');
+        } else {
+          toast('已寄到 ' + (data?.sentTo || '你的信箱'));
+        }
+      } catch(err){
+        toast('匯出失敗，請再試一次');
+      }
+      btn.disabled = false;
+      btn.textContent = originalText;
+    };
+  });
+}
 function fmtDate(d){ if(!d) return '—'; return new Date(d).toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit'}); }
 function fmtTime(d){ if(!d) return '—'; return new Date(d).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'}); }
 function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
@@ -689,6 +728,7 @@ async function loadAdminTab(){
         </div>
       </div>
       <button class="btn-secondary" id="mat-submit">新增物料</button>
+      ${exportBarHtml('inventory')}
     </div>`;
   }
 
@@ -722,6 +762,7 @@ async function loadAdminTab(){
         <button id="pr-issue" style="flex:1;padding:11px;border-radius:8px;border:none;background:var(--teal);color:#fff;font-size:14px;">確認送出（員工可查閱）</button>
       </div>
       <div style="margin-top:14px;">
+        <div style="font-size:13px;color:var(--text-dim);font-weight:500;margin-bottom:8px;">薪資表</div>
         ${(recentPayroll&&recentPayroll.length) ? recentPayroll.map(p=>`
           <div class="list-row">
             <div><div class="l-title">${p.employees?.name||'—'} · ${p.pay_month}</div>
@@ -729,6 +770,7 @@ async function loadAdminTab(){
             <span class="badge ${p.status==='已核發'?'paid':'pending'}">${p.status}</span>
           </div>`).join('') : `<div class="empty-state">尚無薪資登錄紀錄</div>`}
       </div>
+      ${exportBarHtml('payroll')}
     </div>`;
   }
 
@@ -761,6 +803,7 @@ async function loadAdminTab(){
             <div class="l-val mono">淨額 ${money(y.net)}</div>
           </div>`).join('') : `<div class="empty-state">尚無年報資料</div>`}
       </div>
+      ${exportBarHtml('summary')}
     </div>
     <div class="card">
       <h3>會計收支登錄</h3>
@@ -780,10 +823,8 @@ async function loadAdminTab(){
       <div class="pd-line total"><span>淨額</span><span>${money(totalIncome-totalExpense)}</span></div>
     </div>
     <div class="card">
-      <input type="text" class="req-input" id="ac-search" placeholder="查詢科目或說明…" style="margin-bottom:0;">
-    </div>
-    <div class="card">
       <h3 id="ac-list-title">收支明細（最近 5 筆）</h3>
+      <input type="text" class="req-input" id="ac-search" placeholder="查詢科目或說明…">
       <div id="ac-list">${(recentAccounting&&recentAccounting.length) ? recentAccounting.map(e=>`
         <div class="list-row">
           <div><div class="l-title">${e.category}</div>
@@ -791,6 +832,7 @@ async function loadAdminTab(){
             ${e.description ? `<div class="l-sub">${e.description}</div>` : ''}</div>
           <div class="l-val mono" style="color:${e.entry_type==='收入'?'var(--teal)':'var(--alert)'};">${e.entry_type==='收入'?'+':'−'}${money(e.amount)}</div>
         </div>`).join('') : `<div class="empty-state">尚無收支紀錄</div>`}</div>
+      ${exportBarHtml('accounting')}
     </div>`;
   }
 
@@ -814,13 +856,6 @@ async function loadAdminTab(){
 
   html += `
     <div class="card">
-      <h3>員工一覽（${staff?staff.length:0} 人）</h3>
-      ${(staff&&staff.length) ? staff.map(s=>`
-        <div class="list-row">
-          <div class="l-title">${s.name} ${s.role!=='員工'?`<span class="badge approved">${s.role}</span>`:''}</div>
-        </div>`).join('') : `<div class="empty-state">尚無員工資料</div>`}
-    </div>
-    <div class="card">
       <h3>查詢員工詳細資料</h3>
       <select id="staff-lookup">
         <option value="">請選擇員工…</option>
@@ -830,6 +865,7 @@ async function loadAdminTab(){
     </div>`;
 
   content.innerHTML = html;
+  bindExportButtons();
 
   // 所有卡片標題點擊即可收合/展開內容，方便快速瀏覽
   document.querySelectorAll('.card > h3').forEach(h3=>{
