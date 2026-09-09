@@ -449,10 +449,19 @@ async function loadPayrollTab(){
 async function loadInventoryTab(){
   const content = document.getElementById('content');
   const { data } = await sb.from('materials_with_stock').select('*').order('material_code');
-  const { data: loans } = await sb.from('equipment_loans')
-    .select('*, materials(name), employees(name)')
+  const { data: rawLoans } = await sb.from('equipment_loans')
+    .select('*, materials(name)')
     .is('returned_at', null)
     .order('borrowed_at', { ascending:true });
+
+  // 借用人姓名透過 employee_names（開放查詢的姓名對照表）另外查，避免一般員工看不到別人姓名
+  let loans = rawLoans || [];
+  if(loans.length){
+    const ids = [...new Set(loans.map(l=>l.employee_id))];
+    const { data: names } = await sb.from('employee_names').select('*').in('id', ids);
+    const nameMap = Object.fromEntries((names||[]).map(n=>[n.id, n.name]));
+    loans = loans.map(l=>({ ...l, borrowerName: nameMap[l.employee_id] || '—' }));
+  }
 
   if(!data || !data.length){
     content.innerHTML = `<div class="card"><div class="empty-state">尚無物料資料</div></div>`;
@@ -480,6 +489,29 @@ async function loadInventoryTab(){
         </div>
       </div>
     </div>`).join('');
+  }
+
+  function renderLoanList(list){
+    return (list&&list.length) ? list.map(l=>`
+      <div class="list-row">
+        <div><div class="l-title">${l.materials?.name||'—'} × ${l.quantity}</div>
+          <div class="l-sub">領取人：${l.borrowerName} · ${fmtDate(l.borrowed_at)}</div>
+          ${l.note ? `<div class="l-sub">${l.note}</div>` : ''}</div>
+        <button data-return="${l.id}" style="padding:8px 12px;border-radius:8px;border:1px solid var(--teal);color:var(--teal);background:#fff;font-size:13px;">標記歸還</button>
+      </div>`).join('') : `<div class="empty-state">目前沒有未歸還的借出紀錄</div>`;
+  }
+
+  function bindLoanEvents(){
+    document.querySelectorAll('[data-return]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const { error } = await sb.from('equipment_loans')
+          .update({ returned_at: new Date().toISOString() })
+          .eq('id', btn.dataset.return);
+        if(error){ toast('操作失敗，請再試一次'); return; }
+        toast('已標記歸還');
+        loadInventoryTab();
+      };
+    });
   }
 
   function bindMatEvents(){
@@ -516,16 +548,17 @@ async function loadInventoryTab(){
     });
   }
 
+  const uniqueBorrowers = [...new Map(loans.map(l=>[l.employee_id, l.borrowerName])).entries()];
+
   content.innerHTML = `
     <div class="card">
       <h3>未歸還紀錄${loans&&loans.length ? '（'+loans.length+'）' : ''}</h3>
-      ${(loans&&loans.length) ? loans.map(l=>`
-        <div class="list-row">
-          <div><div class="l-title">${l.materials?.name||'—'} × ${l.quantity}</div>
-            <div class="l-sub">領取人：${l.employees?.name||'—'} · ${fmtDate(l.borrowed_at)}</div>
-            ${l.note ? `<div class="l-sub">${l.note}</div>` : ''}</div>
-          <button data-return="${l.id}" style="padding:8px 12px;border-radius:8px;border:1px solid var(--teal);color:var(--teal);background:#fff;font-size:13px;">標記歸還</button>
-        </div>`).join('') : `<div class="empty-state">目前沒有未歸還的借出紀錄</div>`}
+      ${uniqueBorrowers.length ? `
+        <select id="loan-borrower-filter" style="margin-bottom:12px;">
+          <option value="">查詢領取人：全部</option>
+          ${uniqueBorrowers.map(([id,name])=>`<option value="${id}">${name}</option>`).join('')}
+        </select>` : ''}
+      <div id="loan-list">${renderLoanList(loans)}</div>
     </div>
     <div class="card">
       <input type="text" class="req-input" id="mat-search" placeholder="搜尋品名或代碼…" style="margin-bottom:0;">
@@ -533,20 +566,21 @@ async function loadInventoryTab(){
     <div class="card">
       <h3>物料庫存</h3>
       <div id="mat-list">${renderMatList(data)}</div>
+      ${exportBarHtml('inventory')}
     </div>`;
 
   bindMatEvents();
+  bindLoanEvents();
+  bindExportButtons();
 
-  document.querySelectorAll('[data-return]').forEach(btn=>{
-    btn.onclick = async ()=>{
-      const { error } = await sb.from('equipment_loans')
-        .update({ returned_at: new Date().toISOString() })
-        .eq('id', btn.dataset.return);
-      if(error){ toast('操作失敗，請再試一次'); return; }
-      toast('已標記歸還');
-      loadInventoryTab();
+  const borrowerFilter = document.getElementById('loan-borrower-filter');
+  if(borrowerFilter){
+    borrowerFilter.onchange = (e)=>{
+      const filtered = e.target.value ? loans.filter(l=>l.employee_id===e.target.value) : loans;
+      document.getElementById('loan-list').innerHTML = renderLoanList(filtered);
+      bindLoanEvents();
     };
-  });
+  }
 
   document.getElementById('mat-search').oninput = (e)=>{
     const kw = e.target.value.trim().toLowerCase();
@@ -728,7 +762,6 @@ async function loadAdminTab(){
         </div>
       </div>
       <button class="btn-secondary" id="mat-submit">新增物料</button>
-      ${exportBarHtml('inventory')}
     </div>`;
   }
 
