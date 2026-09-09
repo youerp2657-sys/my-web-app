@@ -679,8 +679,10 @@ async function loadAdminTab(){
 
   const canSupervise = ['組長','經理','超級管理員'].includes(me.role);
   const canHR = ['人資','超級管理員'].includes(me.role);
-  const canAccount = ['會計','經理','超級管理員'].includes(me.role);
+  const canAccount = ['會計','超級管理員'].includes(me.role);
   const isSuperAdmin = me.role === '超級管理員';
+  const canViewStaff = ['人資','經理','超級管理員'].includes(me.role);
+  const isRoleManager = ['人資','經理','超級管理員'].includes(me.role);
 
   const { data: staff } = await sb.from('employees').select('*').order('employee_code');
   const pending = canSupervise ? (await sb.from('requests')
@@ -869,25 +871,34 @@ async function loadAdminTab(){
     </div>`;
   }
 
-  if(isSuperAdmin){
+  if(isRoleManager){
+    const assignableRoles = isSuperAdmin
+      ? ['員工','組長','人資','會計','經理','超級管理員']
+      : ['員工','組長','人資','會計','經理'];
     html += `
     <div class="card">
       <h3>角色管理</h3>
-      ${(staff&&staff.length) ? staff.map(s=>`
+      ${(staff&&staff.length) ? staff.map(s=>{
+        const locked = !isSuperAdmin && s.role==='超級管理員';
+        return `
         <div class="list-row">
           <div><div class="l-title">${s.name}</div>
             <div class="l-sub mono">${s.employee_code} · ${s.department||''}</div></div>
+          ${locked ? `<span class="badge pending">超級管理員（唯讀）</span>` : `
           <div style="display:flex;gap:6px;align-items:center;">
             <select data-role-for="${s.id}" style="padding:6px 8px;border-radius:6px;border:1px solid var(--line);font-size:13px;">
-              ${['員工','組長','人資','會計','經理','超級管理員'].map(r=>`<option value="${r}" ${s.role===r?'selected':''}>${r}</option>`).join('')}
+              ${assignableRoles.map(r=>`<option value="${r}" ${s.role===r?'selected':''}>${r}</option>`).join('')}
             </select>
             <button data-role-save="${s.id}" style="padding:6px 10px;border-radius:6px;border:none;background:var(--ink);color:#fff;font-size:12px;">儲存</button>
-          </div>
-        </div>`).join('') : ''}
+          </div>`}
+        </div>`;
+      }).join('') : ''}
+      ${!isSuperAdmin ? `<div class="l-sub" style="margin-top:10px;color:var(--text-dim);">提醒：你沒有指派「超級管理員」角色的權限，現有超級管理員的角色也無法由你異動。</div>` : ''}
     </div>`;
   }
 
-  html += `
+  if(canViewStaff){
+    html += `
     <div class="card">
       <h3>查詢員工詳細資料</h3>
       <select id="staff-lookup">
@@ -896,6 +907,7 @@ async function loadAdminTab(){
       </select>
       <div id="staff-detail"></div>
     </div>`;
+  }
 
   content.innerHTML = html;
   bindExportButtons();
@@ -905,24 +917,27 @@ async function loadAdminTab(){
     h3.onclick = ()=> h3.parentElement.classList.toggle('collapsed');
   });
 
-  document.getElementById('staff-lookup').onchange = (e)=>{
-    const s = (staff||[]).find(x=>x.id === e.target.value);
-    const detail = document.getElementById('staff-detail');
-    if(!s){ detail.innerHTML = ''; return; }
-    detail.innerHTML = `
-      <div class="profile-grid" style="margin-top:12px;">
-        <div><span>員工編號</span><b class="mono">${s.employee_code}</b></div>
-        <div><span>角色</span><b>${s.role}</b></div>
-        <div><span>部門</span><b>${s.department||'—'}</b></div>
-        <div><span>職稱</span><b>${s.title||'—'}</b></div>
-        <div><span>電話</span><b>${s.phone||'—'}</b></div>
-        <div><span>到職日</span><b>${fmtDate(s.start_date)}</b></div>
-        <div><span>在職狀態</span><b>${s.status}</b></div>
-        <div><span>登入信箱</span><b style="font-size:12px;">${s.login_email}</b></div>
-      </div>`;
-  };
+  const staffLookupEl = document.getElementById('staff-lookup');
+  if(staffLookupEl){
+    staffLookupEl.onchange = (e)=>{
+      const s = (staff||[]).find(x=>x.id === e.target.value);
+      const detail = document.getElementById('staff-detail');
+      if(!s){ detail.innerHTML = ''; return; }
+      detail.innerHTML = `
+        <div class="profile-grid" style="margin-top:12px;">
+          <div><span>員工編號</span><b class="mono">${s.employee_code}</b></div>
+          <div><span>角色</span><b>${s.role}</b></div>
+          <div><span>部門</span><b>${s.department||'—'}</b></div>
+          <div><span>職稱</span><b>${s.title||'—'}</b></div>
+          <div><span>電話</span><b>${s.phone||'—'}</b></div>
+          <div><span>到職日</span><b>${fmtDate(s.start_date)}</b></div>
+          <div><span>在職狀態</span><b>${s.status}</b></div>
+          <div><span>登入信箱</span><b style="font-size:12px;">${s.login_email}</b></div>
+        </div>`;
+    };
+  }
 
-  if(isSuperAdmin){
+  if(canSupervise){
     document.getElementById('mat-submit').onclick = async ()=>{
       const code = document.getElementById('mat-code').value.trim();
       const name = document.getElementById('mat-name').value.trim();
@@ -942,13 +957,15 @@ async function loadAdminTab(){
       toast('物料新增成功');
       loadAdminTab();
     };
+  }
 
+  if(isRoleManager){
     document.querySelectorAll('[data-role-save]').forEach(btn=>{
       btn.onclick = async ()=>{
         const id = btn.dataset.roleSave;
         const role = document.querySelector(`[data-role-for="${id}"]`).value;
         const { error } = await sb.from('employees').update({ role }).eq('id', id);
-        if(error){ toast('更新失敗，請再試一次'); return; }
+        if(error){ toast('更新失敗，請確認你是否有權限異動這位員工的角色'); return; }
         toast('角色已更新');
         loadAdminTab();
       };
