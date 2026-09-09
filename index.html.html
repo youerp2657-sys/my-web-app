@@ -2,11 +2,28 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>廠務通 · 打卡 / 薪資 / 庫存</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+
+<!-- 讀取 Manifest 檔案（支援 Android 與現代瀏覽器加入主畫面） -->
+<link rel="manifest" href="manifest.json">
+
+<!-- 鎖定畫面比例，防止雙擊放大縮小，操作手感更像原生 App -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+<!-- iOS Safari 專屬全螢幕設定 -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+
+<!-- iOS 頂部狀態列樣式 -->
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+
+<!-- iOS 加入主畫面後顯示的 App 名稱 -->
+<meta name="apple-mobile-web-app-title" content="廠務通">
+
+<!-- 瀏覽器網址列/工具列顏色，跟品牌主色一致 -->
+<meta name="theme-color" content="#1B2430">
 <style>
   :root{
     --ink:#1B2430;
@@ -159,6 +176,19 @@ function fmtDate(d){ if(!d) return '—'; return new Date(d).toLocaleDateString(
 function fmtTime(d){ if(!d) return '—'; return new Date(d).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'}); }
 function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 
+// 嘗試取得目前定位，8 秒內拿不到或使用者拒絕就回傳 null，不擋打卡動作
+function getLocation(){
+  return new Promise((resolve)=>{
+    if(!navigator.geolocation){ resolve(null); return; }
+    const timer = setTimeout(()=> resolve(null), 8000);
+    navigator.geolocation.getCurrentPosition(
+      (pos)=>{ clearTimeout(timer); resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }); },
+      ()=>{ clearTimeout(timer); resolve(null); },
+      { enableHighAccuracy:false, timeout:7500, maximumAge:60000 }
+    );
+  });
+}
+
 const ICONS = {
   clock: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
   payroll: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h3"/></svg>',
@@ -243,7 +273,7 @@ function renderShell(){
       <button class="nav-btn" data-tab="payroll">${ICONS.payroll}<span class="lb">薪資</span></button>
       <button class="nav-btn" data-tab="inventory">${ICONS.inventory}<span class="lb">庫存</span></button>
       <button class="nav-btn" data-tab="more">${ICONS.more}<span class="lb">更多</span></button>
-      ${me.is_admin ? `<button class="nav-btn" data-tab="admin">${ICONS.admin}<span class="lb">管理</span></button>` : ''}
+      ${me.role !== '員工' ? `<button class="nav-btn" data-tab="admin">${ICONS.admin}<span class="lb">管理</span></button>` : ''}
     </div>`;
   document.getElementById('logout-btn').onclick = doLogout;
   document.querySelectorAll('.nav-btn').forEach(b=>{
@@ -297,7 +327,8 @@ async function loadClockTab(){
       ${(history&&history.length) ? history.map(r=>`
         <div class="list-row">
           <div><div class="l-title">${fmtDate(r.clock_date)} · ${r.shift_type||''}</div>
-            <div class="l-sub mono">${fmtTime(r.clock_in)} – ${fmtTime(r.clock_out)}</div></div>
+            <div class="l-sub mono">${fmtTime(r.clock_in)} – ${fmtTime(r.clock_out)}</div>
+            ${(r.clock_in_lat||r.clock_out_lat) ? `<div class="l-sub"><a href="https://www.google.com/maps?q=${r.clock_in_lat||r.clock_out_lat},${r.clock_in_lng||r.clock_out_lng}" target="_blank" style="color:var(--teal);">📍 查看打卡位置</a></div>` : ''}</div>
           <div class="l-val mono">${r.work_hours!=null ? r.work_hours+'h' : '—'}</div>
         </div>`).join('') : `<div class="empty-state">尚無紀錄</div>`}
     </div>`;
@@ -306,19 +337,28 @@ async function loadClockTab(){
   if(actionBtn){
     actionBtn.onclick = async ()=>{
       actionBtn.disabled = true;
+      const originalText = actionBtn.textContent;
+      actionBtn.textContent = '定位中…';
+      const loc = await getLocation();
+      actionBtn.textContent = originalText;
       const nowIso = new Date().toISOString();
       let err;
       if(!todayRow){
         ({ error: err } = await sb.from('timeclock').insert({
-          employee_id: me.id, clock_date: todayStr(), clock_in: nowIso
+          employee_id: me.id, clock_date: todayStr(), clock_in: nowIso,
+          clock_in_lat: loc?.lat ?? null, clock_in_lng: loc?.lng ?? null
         }));
       } else if(!todayRow.clock_in){
-        ({ error: err } = await sb.from('timeclock').update({ clock_in: nowIso }).eq('id', todayRow.id));
+        ({ error: err } = await sb.from('timeclock').update({
+          clock_in: nowIso, clock_in_lat: loc?.lat ?? null, clock_in_lng: loc?.lng ?? null
+        }).eq('id', todayRow.id));
       } else {
-        ({ error: err } = await sb.from('timeclock').update({ clock_out: nowIso }).eq('id', todayRow.id));
+        ({ error: err } = await sb.from('timeclock').update({
+          clock_out: nowIso, clock_out_lat: loc?.lat ?? null, clock_out_lng: loc?.lng ?? null
+        }).eq('id', todayRow.id));
       }
       if(err){ toast('打卡失敗，請再試一次'); actionBtn.disabled = false; return; }
-      toast('打卡成功');
+      toast(loc ? '打卡成功（已記錄位置）' : '打卡成功（未取得位置）');
       loadClockTab();
     };
   }
@@ -427,6 +467,7 @@ async function loadMoreTab(){
         <div><span>員工編號</span><b class="mono">${me.employee_code}</b></div>
         <div><span>狀態</span><b>${me.status}</b></div>
         <div><span>到職日</span><b>${fmtDate(me.start_date)}</b></div>
+        <div><span>角色</span><b>${me.role}</b></div>
         <div><span>信箱</span><b style="font-size:12px">${me.login_email}</b></div>
       </div>
     </div>
@@ -491,18 +532,44 @@ async function loadMoreTab(){
   };
 }
 
-/* ---------------- 管理（僅 is_admin） ---------------- */
+/* ---------------- 管理（依角色顯示不同區塊：組長/人資/會計/經理/超級管理員） ---------------- */
 async function loadAdminTab(){
   const content = document.getElementById('content');
   content.innerHTML = `<div class="card"><div class="empty-state">載入中…</div></div>`;
 
+  const canSupervise = ['組長','經理','超級管理員'].includes(me.role);
+  const canHR = ['人資','超級管理員'].includes(me.role);
+  const canAccount = ['會計','經理','超級管理員'].includes(me.role);
+  const isSuperAdmin = me.role === '超級管理員';
+
   const { data: staff } = await sb.from('employees').select('*').order('employee_code');
-  const { data: pending } = await sb.from('requests')
+  const pending = canSupervise ? (await sb.from('requests')
     .select('*, employees(name, department)')
     .eq('status', '待審核')
-    .order('submitted_at', { ascending:true });
+    .order('submitted_at', { ascending:true })).data : [];
+  const recentClocks = canSupervise ? (await sb.from('timeclock')
+    .select('*, employees(name, department)')
+    .order('clock_date', { ascending:false })
+    .order('clock_in', { ascending:false })
+    .limit(20)).data : [];
+  const recentPayroll = canHR ? (await sb.from('payroll')
+    .select('*, employees(name)')
+    .order('pay_month', { ascending:false })
+    .limit(10)).data : [];
+  const recentAccounting = canAccount ? (await sb.from('accounting_entries')
+    .select('*, employees(name)')
+    .order('entry_date', { ascending:false })
+    .order('created_at', { ascending:false })
+    .limit(30)).data : [];
+  const monthlySummary = canAccount ? (await sb.from('accounting_monthly_summary')
+    .select('*').limit(12)).data : [];
+  const yearlySummary = canAccount ? (await sb.from('accounting_yearly_summary')
+    .select('*').limit(5)).data : [];
 
-  content.innerHTML = `
+  let html = '';
+
+  if(canSupervise){
+    html += `
     <div class="card">
       <h3>待審核申請${pending&&pending.length ? '（'+pending.length+'）' : ''}</h3>
       ${(pending&&pending.length) ? pending.map(r=>`
@@ -519,6 +586,16 @@ async function loadAdminTab(){
         </div>`).join('') : `<div class="empty-state">目前沒有待審核的申請</div>`}
     </div>
     <div class="card">
+      <h3>全體打卡紀錄（最近 20 筆）</h3>
+      ${(recentClocks&&recentClocks.length) ? recentClocks.map(r=>`
+        <div class="list-row">
+          <div><div class="l-title">${r.employees?.name||'—'} · ${fmtDate(r.clock_date)}</div>
+            <div class="l-sub mono">${fmtTime(r.clock_in)} – ${fmtTime(r.clock_out)}</div>
+            ${(r.clock_in_lat||r.clock_out_lat) ? `<div class="l-sub"><a href="https://www.google.com/maps?q=${r.clock_in_lat||r.clock_out_lat},${r.clock_in_lng||r.clock_out_lng}" target="_blank" style="color:var(--teal);">📍 查看位置</a></div>` : `<div class="l-sub" style="color:var(--alert);">未記錄位置</div>`}</div>
+          <div class="l-val mono">${r.work_hours!=null ? r.work_hours+'h' : '—'}</div>
+        </div>`).join('') : `<div class="empty-state">尚無打卡紀錄</div>`}
+    </div>
+    <div class="card">
       <h3>新增物料</h3>
       <input type="text" class="req-input" id="mat-code" placeholder="物料代碼（例如 M007）">
       <input type="text" class="req-input" id="mat-name" placeholder="品名">
@@ -531,53 +608,248 @@ async function loadAdminTab(){
         </div>
       </div>
       <button class="btn-secondary" id="mat-submit">新增物料</button>
+    </div>`;
+  }
+
+  if(canHR){
+    html += `
+    <div class="card">
+      <h3>薪資登錄</h3>
+      <select id="pr-employee">
+        ${(staff||[]).map(s=>`<option value="${s.id}">${s.name}（${s.employee_code}）</option>`).join('')}
+      </select>
+      <input type="text" class="req-input" id="pr-month" placeholder="薪資月份（例如 2026-08）">
+      <div class="row" style="display:flex;gap:8px;">
+        <input type="number" class="req-input" id="pr-base" placeholder="本薪" style="margin-bottom:0;">
+        <input type="number" class="req-input" id="pr-overtime" placeholder="加班費" style="margin-bottom:0;">
+      </div>
+      <div class="row" style="display:flex;gap:8px;margin-top:10px;">
+        <input type="number" class="req-input" id="pr-night" placeholder="夜班津貼" style="margin-bottom:0;">
+        <input type="number" class="req-input" id="pr-bonus" placeholder="全勤獎金" style="margin-bottom:0;">
+      </div>
+      <div class="row" style="display:flex;gap:8px;margin-top:10px;">
+        <input type="number" class="req-input" id="pr-labor" placeholder="勞保費" style="margin-bottom:0;">
+        <input type="number" class="req-input" id="pr-health" placeholder="健保費" style="margin-bottom:0;">
+      </div>
+      <input type="number" class="req-input" id="pr-tax" placeholder="所得稅" style="margin-top:10px;">
+      <div class="row" style="display:flex;gap:8px;margin-top:6px;">
+        <button id="pr-save-draft" style="flex:1;padding:11px;border-radius:8px;border:1px solid var(--line);background:#fff;font-size:14px;">存為草稿（員工不可見）</button>
+        <button id="pr-issue" style="flex:1;padding:11px;border-radius:8px;border:none;background:var(--teal);color:#fff;font-size:14px;">確認送出（員工可查閱）</button>
+      </div>
+      <div style="margin-top:14px;">
+        ${(recentPayroll&&recentPayroll.length) ? recentPayroll.map(p=>`
+          <div class="list-row">
+            <div><div class="l-title">${p.employees?.name||'—'} · ${p.pay_month}</div>
+              <div class="l-sub mono">${money(p.net_pay)}</div></div>
+            <span class="badge ${p.status==='已核發'?'paid':'pending'}">${p.status}</span>
+          </div>`).join('') : `<div class="empty-state">尚無薪資登錄紀錄</div>`}
+      </div>
+    </div>`;
+  }
+
+  if(canAccount){
+    const totalIncome = (recentAccounting||[]).filter(e=>e.entry_type==='收入').reduce((s,e)=>s+Number(e.amount),0);
+    const totalExpense = (recentAccounting||[]).filter(e=>e.entry_type==='支出').reduce((s,e)=>s+Number(e.amount),0);
+    const thisMonth = monthlySummary && monthlySummary[0];
+    html += `
+    <div class="card">
+      <h3>本月營運摘要${thisMonth ? '（'+thisMonth.period+'）' : ''}</h3>
+      ${thisMonth ? `
+        <div class="pd-line"><span>收入</span><span>${money(thisMonth.total_income)}</span></div>
+        <div class="pd-line"><span>支出</span><span>−${money(thisMonth.total_expense)}</span></div>
+        <div class="pd-line total"><span>淨額</span><span>${money(thisMonth.net)}</span></div>
+      ` : `<div class="empty-state">本月尚無資料</div>`}
+      <div style="margin-top:14px;"><h3 style="margin-bottom:8px;">近 12 個月月報</h3>
+        ${(monthlySummary&&monthlySummary.length) ? monthlySummary.map(m=>`
+          <div class="list-row">
+            <div class="l-title">${m.period}</div>
+            <div style="text-align:right;font-size:13px;">
+              <div style="color:var(--teal);">+${money(m.total_income)}</div>
+              <div style="color:var(--alert);">−${money(m.total_expense)}</div>
+            </div>
+          </div>`).join('') : `<div class="empty-state">尚無月報資料</div>`}
+      </div>
+      <div style="margin-top:14px;"><h3 style="margin-bottom:8px;">近 5 年年報</h3>
+        ${(yearlySummary&&yearlySummary.length) ? yearlySummary.map(y=>`
+          <div class="list-row">
+            <div class="l-title">${y.period} 年</div>
+            <div class="l-val mono">淨額 ${money(y.net)}</div>
+          </div>`).join('') : `<div class="empty-state">尚無年報資料</div>`}
+      </div>
     </div>
+    <div class="card">
+      <h3>會計收支登錄</h3>
+      <div class="row" style="display:flex;gap:8px;">
+        <select id="ac-type" style="flex:1;margin-bottom:10px;">
+          <option value="收入">收入</option>
+          <option value="支出">支出</option>
+        </select>
+        <input type="date" class="req-input" id="ac-date" style="flex:1;margin-bottom:10px;">
+      </div>
+      <select id="ac-category"></select>
+      <input type="number" min="0" class="req-input" id="ac-amount" placeholder="金額">
+      <input type="text" class="req-input" id="ac-desc" placeholder="說明（選填）">
+      <button class="btn-secondary" id="ac-submit">新增紀錄</button>
+      <div class="pd-line total" style="margin-top:14px;"><span>本清單收入合計</span><span>${money(totalIncome)}</span></div>
+      <div class="pd-line total" style="color:var(--alert);"><span>本清單支出合計</span><span>${money(totalExpense)}</span></div>
+      <div class="pd-line total"><span>淨額</span><span>${money(totalIncome-totalExpense)}</span></div>
+    </div>
+    <div class="card">
+      <h3>收支明細（最近 30 筆）</h3>
+      ${(recentAccounting&&recentAccounting.length) ? recentAccounting.map(e=>`
+        <div class="list-row">
+          <div><div class="l-title">${e.category}</div>
+            <div class="l-sub">${fmtDate(e.entry_date)} · 登錄人：${e.employees?.name||'—'}</div>
+            ${e.description ? `<div class="l-sub">${e.description}</div>` : ''}</div>
+          <div class="l-val mono" style="color:${e.entry_type==='收入'?'var(--teal)':'var(--alert)'};">${e.entry_type==='收入'?'+':'−'}${money(e.amount)}</div>
+        </div>`).join('') : `<div class="empty-state">尚無收支紀錄</div>`}
+    </div>`;
+  }
+
+  if(isSuperAdmin){
+    html += `
+    <div class="card">
+      <h3>角色管理</h3>
+      ${(staff&&staff.length) ? staff.map(s=>`
+        <div class="list-row">
+          <div><div class="l-title">${s.name}</div>
+            <div class="l-sub mono">${s.employee_code} · ${s.department||''}</div></div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <select data-role-for="${s.id}" style="padding:6px 8px;border-radius:6px;border:1px solid var(--line);font-size:13px;">
+              ${['員工','組長','人資','會計','經理','超級管理員'].map(r=>`<option value="${r}" ${s.role===r?'selected':''}>${r}</option>`).join('')}
+            </select>
+            <button data-role-save="${s.id}" style="padding:6px 10px;border-radius:6px;border:none;background:var(--ink);color:#fff;font-size:12px;">儲存</button>
+          </div>
+        </div>`).join('') : ''}
+    </div>`;
+  }
+
+  html += `
     <div class="card">
       <h3>員工一覽（${staff?staff.length:0} 人）</h3>
       ${(staff&&staff.length) ? staff.map(s=>`
         <div class="list-row">
-          <div><div class="l-title">${s.name} ${s.is_admin?'<span class="badge approved">管理員</span>':''}</div>
+          <div><div class="l-title">${s.name} ${s.role!=='員工'?`<span class="badge approved">${s.role}</span>`:''}</div>
             <div class="l-sub mono">${s.employee_code} · ${s.department||''} ${s.title||''}</div>
             <div class="l-sub" style="font-size:11px;">${s.login_email}</div></div>
           <span class="badge ${s.status==='在職'?'paid':'pending'}">${s.status}</span>
         </div>`).join('') : `<div class="empty-state">尚無員工資料</div>`}
     </div>`;
 
-  document.getElementById('mat-submit').onclick = async ()=>{
-    const code = document.getElementById('mat-code').value.trim();
-    const name = document.getElementById('mat-name').value.trim();
-    const category = document.getElementById('mat-category').value.trim();
-    const unit = document.getElementById('mat-unit').value.trim();
-    const initial = parseFloat(document.getElementById('mat-initial').value) || 0;
-    const safety = parseFloat(document.getElementById('mat-safety').value) || 0;
-    if(!code || !name){ toast('請至少填寫物料代碼與品名'); return; }
-    const { error } = await sb.from('materials').insert({
-      material_code: code, name, category: category || null, unit: unit || null,
-      initial_stock: initial, safety_stock: safety
-    });
-    if(error){
-      toast(error.code === '23505' ? '這個物料代碼已經存在' : '新增失敗，請再試一次');
-      return;
-    }
-    toast('物料新增成功');
-    loadAdminTab();
-  };
+  content.innerHTML = html;
 
-  document.querySelectorAll('[data-approve]').forEach(btn=>{
-    btn.onclick = async ()=>{
-      const { error } = await sb.from('requests').update({ status:'已核准' }).eq('id', btn.dataset.approve);
-      if(error){ toast('操作失敗'); return; }
-      toast('已核准'); loadAdminTab();
+  if(isSuperAdmin){
+    document.getElementById('mat-submit').onclick = async ()=>{
+      const code = document.getElementById('mat-code').value.trim();
+      const name = document.getElementById('mat-name').value.trim();
+      const category = document.getElementById('mat-category').value.trim();
+      const unit = document.getElementById('mat-unit').value.trim();
+      const initial = parseFloat(document.getElementById('mat-initial').value) || 0;
+      const safety = parseFloat(document.getElementById('mat-safety').value) || 0;
+      if(!code || !name){ toast('請至少填寫物料代碼與品名'); return; }
+      const { error } = await sb.from('materials').insert({
+        material_code: code, name, category: category || null, unit: unit || null,
+        initial_stock: initial, safety_stock: safety
+      });
+      if(error){
+        toast(error.code === '23505' ? '這個物料代碼已經存在' : '新增失敗，請再試一次');
+        return;
+      }
+      toast('物料新增成功');
+      loadAdminTab();
     };
-  });
-  document.querySelectorAll('[data-reject]').forEach(btn=>{
-    btn.onclick = async ()=>{
-      const { error } = await sb.from('requests').update({ status:'已拒絕' }).eq('id', btn.dataset.reject);
-      if(error){ toast('操作失敗'); return; }
-      toast('已拒絕'); loadAdminTab();
+
+    document.querySelectorAll('[data-role-save]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const id = btn.dataset.roleSave;
+        const role = document.querySelector(`[data-role-for="${id}"]`).value;
+        const { error } = await sb.from('employees').update({ role }).eq('id', id);
+        if(error){ toast('更新失敗，請再試一次'); return; }
+        toast('角色已更新');
+        loadAdminTab();
+      };
+    });
+  }
+
+  if(canHR){
+    async function submitPayroll(status){
+      const employee_id = document.getElementById('pr-employee').value;
+      const pay_month = document.getElementById('pr-month').value.trim();
+      if(!employee_id || !pay_month){ toast('請選擇員工並填寫月份'); return; }
+      const num = (id)=> parseFloat(document.getElementById(id).value) || 0;
+      const { error } = await sb.from('payroll').upsert({
+        employee_id, pay_month,
+        base_salary: num('pr-base'),
+        overtime: num('pr-overtime'),
+        night_shift_allowance: num('pr-night'),
+        full_attendance_bonus: num('pr-bonus'),
+        labor_insurance: num('pr-labor'),
+        health_insurance: num('pr-health'),
+        income_tax: num('pr-tax'),
+        status,
+        issue_date: status==='已核發' ? todayStr() : null
+      }, { onConflict: 'employee_id,pay_month' });
+      if(error){ toast('儲存失敗，請再試一次'); return; }
+      toast(status==='已核發' ? '已送出，員工現在可以查閱' : '已存為草稿');
+      loadAdminTab();
+    }
+    const now = new Date();
+    const prevMonth = new Date(now.getFullYear(), now.getMonth()-1, 1);
+    document.getElementById('pr-month').value = prevMonth.getFullYear()+'-'+String(prevMonth.getMonth()+1).padStart(2,'0');
+    document.getElementById('pr-save-draft').onclick = ()=> submitPayroll('待核發');
+    document.getElementById('pr-issue').onclick = ()=> submitPayroll('已核發');
+  }
+
+  if(canAccount){
+    document.getElementById('ac-date').value = todayStr();
+    const CATEGORY_OPTIONS = {
+      '收入': ['銷貨收入','服務收入','其他收入'],
+      '支出': ['原料採購','薪資支出','水電費','房租','設備維護','運費','其他支出']
     };
-  });
+    const typeSelect = document.getElementById('ac-type');
+    const categorySelect = document.getElementById('ac-category');
+    function refreshCategoryOptions(){
+      categorySelect.innerHTML = CATEGORY_OPTIONS[typeSelect.value]
+        .map(c=>`<option value="${c}">${c}</option>`).join('');
+    }
+    refreshCategoryOptions();
+    typeSelect.onchange = refreshCategoryOptions;
+
+    document.getElementById('ac-submit').onclick = async ()=>{
+      const entry_type = typeSelect.value;
+      const entry_date = document.getElementById('ac-date').value;
+      const category = categorySelect.value;
+      const amount = parseFloat(document.getElementById('ac-amount').value);
+      const description = document.getElementById('ac-desc').value.trim();
+      if(!category || !amount || amount<=0){ toast('請選擇科目並填寫正確的金額'); return; }
+      const { error } = await sb.from('accounting_entries').insert({
+        entry_type, entry_date, category, amount,
+        description: description || null, recorded_by: me.id
+      });
+      if(error){ toast('新增失敗，請再試一次'); return; }
+      toast('已新增一筆' + entry_type);
+      loadAdminTab();
+    };
+  }
+
+  if(canSupervise){
+    document.querySelectorAll('[data-approve]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const { error } = await sb.from('requests').update({ status:'已核准' }).eq('id', btn.dataset.approve);
+        if(error){ toast('操作失敗'); return; }
+        toast('已核准'); loadAdminTab();
+      };
+    });
+    document.querySelectorAll('[data-reject]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const { error } = await sb.from('requests').update({ status:'已拒絕' }).eq('id', btn.dataset.reject);
+        if(error){ toast('操作失敗'); return; }
+        toast('已拒絕'); loadAdminTab();
+      };
+    });
+  }
 }
+
 
 init();
 </script>
