@@ -2,7 +2,7 @@
   "name": "廠務通 · 打卡 / 薪資 / 庫存",
   "short_name": "廠務通",
   "description": "工廠員工打卡、薪資查詢、庫存管理系統",
-  "start_url": "./index.html",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
