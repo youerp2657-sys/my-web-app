@@ -6,6 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 
 <!-- 讀取 Manifest 檔案（支援 Android 與現代瀏覽器加入主畫面） -->
 <link rel="manifest" href="manifest.json">
@@ -158,6 +159,16 @@
   .toast.show{opacity:1;}
 
   .hidden{display:none !important;}
+
+  .scan-overlay{position:fixed;inset:0;background:#000;z-index:100;display:flex;
+    flex-direction:column;align-items:center;justify-content:center;}
+  .scan-overlay video{width:100%;max-width:480px;}
+  .scan-frame{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    width:70%;max-width:280px;aspect-ratio:1;border:3px solid var(--teal);border-radius:12px;
+    box-shadow:0 0 0 2000px rgba(0,0,0,0.45);}
+  .scan-hint{position:absolute;bottom:60px;left:0;right:0;text-align:center;color:#fff;font-size:14px;}
+  .scan-close{position:absolute;top:20px;right:20px;background:rgba(255,255,255,0.15);
+    color:#fff;border:none;border-radius:50%;width:40px;height:40px;font-size:20px;}
 </style>
 </head>
 <body>
@@ -206,6 +217,119 @@ const TW_BANKS = [
   ['816','安泰商業銀行'],['822','中國信託商業銀行'],['824','連線商業銀行（LINE Bank）'],
   ['826','樂天國際商業銀行'],
 ];
+
+// 解析台灣電子發票左方 QR Code（依財政部「電子發票證明聯一維及二維條碼規格說明」v1.9）
+// 前 77 碼固定格式：發票號碼(10)+開立日期民國(7)+隨機碼(4)+銷售額16進位(8)+總計額16進位(8)+買方統編(8)+賣方統編(8)+加密驗證(24)
+function parseTWEInvoice(text){
+  if(!text || text.length < 77) return null;
+  const invoiceNumber = text.slice(0,10);
+  if(!/^[A-Z]{2}\d{8}$/.test(invoiceNumber)) return null;
+  const dateStr = text.slice(10,17);
+  const rocYear = parseInt(dateStr.slice(0,3),10);
+  const month = dateStr.slice(3,5);
+  const day = dateStr.slice(5,7);
+  if(isNaN(rocYear) || !/^\d{2}$/.test(month) || !/^\d{2}$/.test(day)) return null;
+  const salesHex = text.slice(21,29);
+  const totalHex = text.slice(29,37);
+  const buyerId = text.slice(37,45);
+  const sellerId = text.slice(45,53);
+  const total = parseInt(totalHex,16);
+  const sales = parseInt(salesHex,16);
+  if(isNaN(total)) return null;
+  return {
+    invoiceNumber,
+    dateISO: `${rocYear+1911}-${month}-${day}`,
+    total, sales, buyerId, sellerId,
+  };
+}
+
+// 開啟全螢幕相機掃描，掃到結果後呼叫 onResult(text)，關閉呼叫 onClose()
+let scanStream = null;
+function startScanner(onResult){
+  const overlay = document.createElement('div');
+  overlay.className = 'scan-overlay';
+  overlay.innerHTML = `
+    <video id="scan-video" playsinline autoplay muted></video>
+    <div class="scan-frame"></div>
+    <div class="scan-hint">將 QR Code 對準框內，會自動辨識</div>
+    <button class="scan-close" id="scan-close">×</button>`;
+  document.body.appendChild(overlay);
+  const video = overlay.querySelector('#scan-video');
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  let stop = false;
+
+  function closeScanner(){
+    stop = true;
+    if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream = null; }
+    overlay.remove();
+  }
+  overlay.querySelector('#scan-close').onclick = closeScanner;
+
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+    .then(stream=>{
+      scanStream = stream;
+      video.srcObject = stream;
+      function tick(){
+        if(stop) return;
+        if(video.readyState === video.HAVE_ENOUGH_DATA){
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const code = jsQR(imageData.data, imageData.width, imageData.height);
+          if(code && code.data){
+            closeScanner();
+            onResult(code.data);
+            return;
+          }
+        }
+        requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    })
+    .catch(()=>{
+      closeScanner();
+      toast('無法開啟相機，請確認已允許相機權限');
+    });
+}
+
+// 把使用者選的照片壓縮到長邊最多 800px、JPEG 品質 0.8，回傳壓縮後的 Blob
+function compressImage(file, maxDim=800, quality=0.8){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = (e)=>{ img.src = e.target.result; };
+    reader.onerror = reject;
+    img.onload = ()=>{
+      let { width, height } = img;
+      if(width > height && width > maxDim){ height = height*(maxDim/width); width = maxDim; }
+      else if(height > maxDim){ width = width*(maxDim/height); height = maxDim; }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      canvas.toBlob(blob=> blob ? resolve(blob) : reject(new Error('壓縮失敗')), 'image/jpeg', quality);
+    };
+    img.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// 上傳員工證件照（固定命名 {employee_id}.jpg，upsert 覆蓋舊照片）
+async function uploadEmployeePhoto(employeeId, file){
+  const blob = await compressImage(file);
+  const { error } = await sb.storage.from('employee-photos')
+    .upload(`${employeeId}.jpg`, blob, { upsert: true, contentType: 'image/jpeg' });
+  return error;
+}
+
+// 取得員工證件照的暫時可讀網址，沒有照片時回傳 null
+async function getEmployeePhotoUrl(employeeId){
+  const { data, error } = await sb.storage.from('employee-photos')
+    .createSignedUrl(`${employeeId}.jpg`, 3600);
+  if(error || !data) return null;
+  return data.signedUrl;
+}
 
 function bankSelectHtml(id, selected){
   return `<select id="${id}"><option value="">請選擇銀行…</option>${TW_BANKS.map(([code,name])=>
@@ -667,9 +791,11 @@ async function loadMoreTab(){
   const content = document.getElementById('content');
   const { data: myRequests } = await sb.from('requests').select('*')
     .eq('employee_id', me.id).order('submitted_at', { ascending:false }).limit(10);
+  const myPhotoUrl = await getEmployeePhotoUrl(me.id);
 
   content.innerHTML = `
     <div class="card">
+      ${myPhotoUrl ? `<img src="${myPhotoUrl}" style="width:80px;height:80px;object-fit:cover;border-radius:12px;margin-bottom:10px;">` : ''}
       <div class="profile-name">${me.name}</div>
       <div class="profile-sub mono">${me.employee_code}</div>
       <div class="profile-grid">
@@ -920,6 +1046,12 @@ async function loadAdminTab(){
     </div>
     <div class="card collapsed">
       <h3>會計收支登錄</h3>
+      <button type="button" id="ac-scan" style="width:100%;padding:12px;border-radius:10px;
+        border:1px solid var(--teal);color:var(--teal);background:#fff;font-size:14px;margin-bottom:14px;
+        display:flex;align-items:center;justify-content:center;gap:8px;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+        掃描 QR Code / 統一發票
+      </button>
       <div class="row" style="display:flex;gap:8px;">
         <select id="ac-type" style="flex:1;margin-bottom:10px;">
           <option value="收入">收入</option>
@@ -1053,6 +1185,8 @@ async function loadAdminTab(){
       const detail = document.getElementById('staff-detail');
       if(!s){ detail.innerHTML = ''; return; }
 
+      const photoUrl = await getEmployeePhotoUrl(s.id);
+
       let sens = null;
       if(canHR){
         const { data } = await sb.from('employee_sensitive').select('*').eq('employee_id', s.id).maybeSingle();
@@ -1061,6 +1195,7 @@ async function loadAdminTab(){
 
       if(!canHR){
         detail.innerHTML = `
+          ${photoUrl ? `<img src="${photoUrl}" style="width:100px;height:100px;object-fit:cover;border-radius:12px;margin-top:12px;">` : ''}
           <div class="profile-grid" style="margin-top:12px;">
             <div><span>員工編號</span><b class="mono">${s.employee_code}</b></div>
             <div><span>角色</span><b>${s.role}</b></div>
@@ -1074,8 +1209,16 @@ async function loadAdminTab(){
 
       // 人資／超級管理員：顯示可編輯表單
       detail.innerHTML = `
-        <div style="margin-top:12px;">
-          <div class="l-sub mono">${s.employee_code} · ${s.role} · ${s.login_email}</div>
+        <div style="margin-top:12px;display:flex;gap:12px;align-items:center;">
+          ${photoUrl ? `<img id="ed-photo-preview" src="${photoUrl}" style="width:80px;height:80px;object-fit:cover;border-radius:12px;">`
+                     : `<div id="ed-photo-preview" style="width:80px;height:80px;border-radius:12px;background:var(--paper);border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-dim);">尚無照片</div>`}
+          <div style="flex:1;">
+            <div class="l-sub mono">${s.employee_code} · ${s.role} · ${s.login_email}</div>
+            <label style="display:inline-block;margin-top:6px;padding:6px 10px;border-radius:6px;border:1px solid var(--teal);color:var(--teal);font-size:12px;cursor:pointer;">
+              更換證件照
+              <input type="file" accept="image/*" capture="environment" id="ed-photo-input" class="hidden">
+            </label>
+          </div>
         </div>
         <div class="row" style="display:flex;gap:8px;margin-top:10px;">
           <input type="text" class="req-input" id="ed-phone" placeholder="電話" value="${s.phone||''}" style="margin-bottom:0;">
@@ -1102,10 +1245,30 @@ async function loadAdminTab(){
         <button class="btn-secondary" id="ed-save" style="margin-top:14px;">儲存修改</button>
       `;
 
+      const photoInput = document.getElementById('ed-photo-input');
+      if(photoInput){
+        photoInput.onchange = ()=>{
+          const file = photoInput.files[0];
+          if(!file) return;
+          const preview = document.getElementById('ed-photo-preview');
+          const reader = new FileReader();
+          reader.onload = (ev)=>{
+            preview.outerHTML = `<img id="ed-photo-preview" src="${ev.target.result}" style="width:80px;height:80px;object-fit:cover;border-radius:12px;">`;
+          };
+          reader.readAsDataURL(file);
+        };
+      }
+
       document.getElementById('ed-save').onclick = async ()=>{
         const btn = document.getElementById('ed-save');
         btn.disabled = true;
         btn.textContent = '儲存中…';
+
+        const selectedPhoto = photoInput && photoInput.files[0];
+        let photoErr = null;
+        if(selectedPhoto){
+          photoErr = await uploadEmployeePhoto(s.id, selectedPhoto);
+        }
 
         const { error: empErr } = await sb.from('employees').update({
           phone: document.getElementById('ed-phone').value.trim() || null,
@@ -1126,7 +1289,7 @@ async function loadAdminTab(){
         btn.disabled = false;
         btn.textContent = '儲存修改';
 
-        if(empErr || sensErr){
+        if(empErr || sensErr || photoErr){
           toast('儲存失敗，請再試一次');
           return;
         }
@@ -1272,6 +1435,24 @@ async function loadAdminTab(){
     }
     refreshCategoryOptions();
     typeSelect.onchange = refreshCategoryOptions;
+
+    document.getElementById('ac-scan').onclick = ()=>{
+      startScanner((text)=>{
+        const inv = parseTWEInvoice(text);
+        if(inv){
+          document.getElementById('ac-date').value = inv.dateISO;
+          document.getElementById('ac-amount').value = inv.total;
+          typeSelect.value = '支出';
+          refreshCategoryOptions();
+          document.getElementById('ac-desc').value =
+            `統一發票 ${inv.invoiceNumber}（賣方統編 ${inv.sellerId}）`;
+          toast('已辨識統一發票，請核對金額後再送出');
+        } else {
+          document.getElementById('ac-desc').value = text;
+          toast('已掃描 QR Code 內容，請自行填寫科目與金額');
+        }
+      });
+    };
 
     document.getElementById('ac-submit').onclick = async ()=>{
       const entry_type = typeSelect.value;
