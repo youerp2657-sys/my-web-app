@@ -294,8 +294,8 @@ function startScanner(onResult){
     });
 }
 
-// 把使用者選的照片壓縮到長邊最多 800px、JPEG 品質 0.8，回傳壓縮後的 Blob
-function compressImage(file, maxDim=800, quality=0.8){
+// 把使用者選的照片壓縮到長邊最多 400px、JPEG 品質 0.6（中等壓縮），回傳壓縮後的 Blob
+function compressImage(file, maxDim=400, quality=0.6){
   return new Promise((resolve, reject)=>{
     const img = new Image();
     const reader = new FileReader();
@@ -315,20 +315,30 @@ function compressImage(file, maxDim=800, quality=0.8){
   });
 }
 
-// 上傳員工證件照（固定命名 {employee_id}.jpg，upsert 覆蓋舊照片）
-async function uploadEmployeePhoto(employeeId, file){
+// 新增一張員工證件照（存到 {employee_id}/{時間戳}.jpg，一位員工可以有多張）
+async function addEmployeePhoto(employeeId, file){
   const blob = await compressImage(file);
+  const path = `${employeeId}/${Date.now()}.jpg`;
   const { error } = await sb.storage.from('employee-photos')
-    .upload(`${employeeId}.jpg`, blob, { upsert: true, contentType: 'image/jpeg' });
+    .upload(path, blob, { contentType: 'image/jpeg' });
   return error;
 }
 
-// 取得員工證件照的暫時可讀網址，沒有照片時回傳 null
+// 列出某位員工的所有照片，回傳含暫時可讀網址的陣列（新到舊排序）
+async function listEmployeePhotos(employeeId){
+  const { data: files, error } = await sb.storage.from('employee-photos').list(employeeId, {
+    sortBy: { column: 'created_at', order: 'desc' }
+  });
+  if(error || !files || !files.length) return [];
+  const paths = files.map(f=>`${employeeId}/${f.name}`);
+  const { data: signed } = await sb.storage.from('employee-photos').createSignedUrls(paths, 3600);
+  return (signed||[]).map((s,i)=>({ path: paths[i], url: s.signedUrl }));
+}
+
+// 取得員工「最新一張」照片的網址，用在個人資料等只需要顯示一張的地方
 async function getEmployeePhotoUrl(employeeId){
-  const { data, error } = await sb.storage.from('employee-photos')
-    .createSignedUrl(`${employeeId}.jpg`, 3600);
-  if(error || !data) return null;
-  return data.signedUrl;
+  const photos = await listEmployeePhotos(employeeId);
+  return photos.length ? photos[0].url : null;
 }
 
 function bankSelectHtml(id, selected){
@@ -1185,7 +1195,7 @@ async function loadAdminTab(){
       const detail = document.getElementById('staff-detail');
       if(!s){ detail.innerHTML = ''; return; }
 
-      const photoUrl = await getEmployeePhotoUrl(s.id);
+      const photos = await listEmployeePhotos(s.id);
 
       let sens = null;
       if(canHR){
@@ -1195,7 +1205,9 @@ async function loadAdminTab(){
 
       if(!canHR){
         detail.innerHTML = `
-          ${photoUrl ? `<img src="${photoUrl}" style="width:100px;height:100px;object-fit:cover;border-radius:12px;margin-top:12px;">` : ''}
+          ${photos.length ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+            ${photos.map(p=>`<img src="${p.url}" style="width:70px;height:70px;object-fit:cover;border-radius:10px;">`).join('')}
+          </div>` : ''}
           <div class="profile-grid" style="margin-top:12px;">
             <div><span>員工編號</span><b class="mono">${s.employee_code}</b></div>
             <div><span>角色</span><b>${s.role}</b></div>
@@ -1209,18 +1221,18 @@ async function loadAdminTab(){
 
       // 人資／超級管理員：顯示可編輯表單
       detail.innerHTML = `
-        <div style="margin-top:12px;display:flex;gap:12px;align-items:center;">
-          ${photoUrl ? `<img id="ed-photo-preview" src="${photoUrl}" style="width:80px;height:80px;object-fit:cover;border-radius:12px;">`
-                     : `<div id="ed-photo-preview" style="width:80px;height:80px;border-radius:12px;background:var(--paper);border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-dim);">尚無照片</div>`}
-          <div style="flex:1;">
-            <div class="l-sub mono">${s.employee_code} · ${s.role} · ${s.login_email}</div>
-            <label style="display:inline-block;margin-top:6px;padding:6px 10px;border-radius:6px;border:1px solid var(--teal);color:var(--teal);font-size:12px;cursor:pointer;">
-              更換證件照
-              <input type="file" accept="image/*" capture="environment" id="ed-photo-input" class="hidden">
-            </label>
+        <div style="margin-top:12px;">
+          <div class="l-sub mono">${s.employee_code} · ${s.role} · ${s.login_email}</div>
+          <div class="l-sub" style="margin:8px 0 6px;">證件照片（${photos.length} 張）</div>
+          <div id="ed-photo-gallery" style="display:flex;gap:8px;flex-wrap:wrap;">
+            ${photos.map(p=>`<img src="${p.url}" style="width:70px;height:70px;object-fit:cover;border-radius:10px;">`).join('')}
           </div>
+          <label style="display:inline-block;margin-top:10px;padding:6px 10px;border-radius:6px;border:1px solid var(--teal);color:var(--teal);font-size:12px;cursor:pointer;">
+            拍照新增證件照
+            <input type="file" accept="image/*" capture="environment" id="ed-photo-input" class="hidden">
+          </label>
         </div>
-        <div class="row" style="display:flex;gap:8px;margin-top:10px;">
+        <div class="row" style="display:flex;gap:8px;margin-top:14px;">
           <input type="text" class="req-input" id="ed-phone" placeholder="電話" value="${s.phone||''}" style="margin-bottom:0;">
           <input type="date" class="req-input" id="ed-start" value="${s.start_date||''}" style="margin-bottom:0;">
         </div>
@@ -1247,15 +1259,18 @@ async function loadAdminTab(){
 
       const photoInput = document.getElementById('ed-photo-input');
       if(photoInput){
-        photoInput.onchange = ()=>{
+        photoInput.onchange = async ()=>{
           const file = photoInput.files[0];
           if(!file) return;
-          const preview = document.getElementById('ed-photo-preview');
-          const reader = new FileReader();
-          reader.onload = (ev)=>{
-            preview.outerHTML = `<img id="ed-photo-preview" src="${ev.target.result}" style="width:80px;height:80px;object-fit:cover;border-radius:12px;">`;
-          };
-          reader.readAsDataURL(file);
+          photoInput.disabled = true;
+          const err = await addEmployeePhoto(s.id, file);
+          photoInput.disabled = false;
+          photoInput.value = '';
+          if(err){ toast('照片上傳失敗，請再試一次'); return; }
+          toast('已新增一張照片');
+          const newPhotos = await listEmployeePhotos(s.id);
+          document.getElementById('ed-photo-gallery').innerHTML =
+            newPhotos.map(p=>`<img src="${p.url}" style="width:70px;height:70px;object-fit:cover;border-radius:10px;">`).join('');
         };
       }
 
@@ -1263,12 +1278,6 @@ async function loadAdminTab(){
         const btn = document.getElementById('ed-save');
         btn.disabled = true;
         btn.textContent = '儲存中…';
-
-        const selectedPhoto = photoInput && photoInput.files[0];
-        let photoErr = null;
-        if(selectedPhoto){
-          photoErr = await uploadEmployeePhoto(s.id, selectedPhoto);
-        }
 
         const { error: empErr } = await sb.from('employees').update({
           phone: document.getElementById('ed-phone').value.trim() || null,
@@ -1289,7 +1298,7 @@ async function loadAdminTab(){
         btn.disabled = false;
         btn.textContent = '儲存修改';
 
-        if(empErr || sensErr || photoErr){
+        if(empErr || sensErr){
           toast('儲存失敗，請再試一次');
           return;
         }
